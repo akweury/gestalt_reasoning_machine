@@ -43,7 +43,8 @@ class GroundingModule:
                 try:
                     soft_facts[pred] = fn(objects=objects, groups=groups, device=self.device)
                 except Exception as e:
-                    print(f"[Soft] Failed predicate {pred}: {e}")
+                    pass  # Silently skip failed soft predicates
+                    # print(f"[Soft] Failed predicate {pred}: {e}")
         return hard_facts, soft_facts, obj_time, group_time
 
 

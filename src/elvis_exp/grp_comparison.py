@@ -720,7 +720,7 @@ def main():
     max_train_samples = getattr(args, 'max_train_samples', 100)
     max_eval_samples = getattr(args, 'max_eval_samples', 10)
     # Position dimension config (total features per object): default 137
-    position_dim = int(getattr(args, 'position_dim', 137))
+    position_dim = int(getattr(args, 'position_dim', 137-64))
     base_dim = 9
     rem = position_dim - base_dim
     if rem < 0 or (rem % 2) != 0:

@@ -1,6 +1,13 @@
 
 # Created by MacBook Pro at 12.06.25
 # ablation_main.py
+import sys
+from pathlib import Path
+
+# Add workspace root to Python path
+workspace_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(workspace_root))
+
 import json
 import time
 import os
@@ -251,7 +258,7 @@ def run_ablation_train_val(train_data, val_data, test_data, obj_model, group_mod
         "negative": val_data["negative"]
     }
     hyp_params = {"prox": 0.9, "sim": 0.5,
-                  "top_k": 5, "conf_th": 0.5, "patch_dim": 7}
+                  "top_k": args.top_k, "conf_th": 0.5, "patch_dim": 7}
     train_img_labels = [1] * len(train_data["positive"]) + \
         [0] * len(train_data["negative"])
     val_img_labels = [1] * len(val_data["positive"]) + \
@@ -573,19 +580,37 @@ def train_group_scorer_model(train_data, val_data, train_principle, args, epochs
     import random
     random.seed(42)
     
-    if num_positive > num_negative:
-        # Undersample positive pairs
-        positive_pairs = random.sample(positive_pairs, num_negative)
-        print(f"Undersampled positive pairs to {len(positive_pairs)}")
-    elif num_negative > num_positive:
-        # Undersample negative pairs
-        negative_pairs = random.sample(negative_pairs, num_positive)
-        print(f"Undersampled negative pairs to {len(negative_pairs)}")
+    # Handle edge cases: if one class is missing, keep all examples from the other
+    if num_positive == 0 and num_negative == 0:
+        print("WARNING: No training pairs available!")
+        balanced_pairs = []
+    elif num_positive == 0:
+        print("WARNING: No positive pairs, keeping all negative pairs")
+        balanced_pairs = negative_pairs
+    elif num_negative == 0:
+        print("WARNING: No negative pairs, keeping all positive pairs")
+        balanced_pairs = positive_pairs
+    else:
+        # Both classes present, balance by undersampling the majority class
+        if num_positive > num_negative:
+            # Undersample positive pairs
+            positive_pairs = random.sample(positive_pairs, num_negative)
+            print(f"Undersampled positive pairs to {len(positive_pairs)}")
+        elif num_negative > num_positive:
+            # Undersample negative pairs
+            negative_pairs = random.sample(negative_pairs, num_positive)
+            print(f"Undersampled negative pairs to {len(negative_pairs)}")
+        
+        # Combine and shuffle
+        balanced_pairs = positive_pairs + negative_pairs
     
-    # Combine and shuffle
-    balanced_pairs = positive_pairs + negative_pairs
     random.shuffle(balanced_pairs)
     print(f"Balanced dataset: {len(balanced_pairs)} total pairs ({len(positive_pairs)} positive, {len(negative_pairs)} negative)")
+    
+    # Check if we have any data to train on
+    if len(balanced_pairs) == 0:
+        print("ERROR: No training pairs available after balancing. Returning untrained model.")
+        return model
     
     # Training setup
     criterion = nn.BCEWithLogitsLoss()
@@ -922,16 +947,19 @@ def compare_scorer_models(train_data, val_data, test_data, train_principle, args
 
 def run_grm_clevr():
     args = args_utils.get_args()
-    args.save_groups = True  # Enable saving group results for analysis
-    args.visualize = True  # Enable visualization of group results
-    args.use_gt_groups = False  # Set to True to use ground truth groups instead of training a model
-    args.model_type="nn"  # Use 'transformer' for group scorer model
-    args.mask_dims = ["color", "shape"]  # Mask color and shape dimensions for ablation
+    args.save_groups = getattr(args, 'save_groups', True)  # Enable saving group results for analysis
+    args.visualize = getattr(args, 'visualize', False)  # Disable visualization by default, enable with --visualize flag
+    args.use_gt_groups = getattr(args, 'use_gt_groups', False)  # Set to True to use ground truth groups instead of training a model
+    args.model_type = getattr(args, 'model_type', "nn")  # Use 'transformer' for group scorer model
+    args.mask_dims = getattr(args, 'mask_dims', ["pos"])  # Mask color and shape dimensions for ablation
+    args.test_group_model = getattr(args, 'test_group_model', False)  # Test group model separately (disabled by default)
+    args.top_k = 10
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    
+    args.principle = "similarity"
+    args.gd_epochs = 10
     # Load CLEVR data
     clevr_path = config.get_clevr_path(args.remote)
-    clevr_grp_path = config.get_clevr_grp_path(args.remote)
+    clevr_grp_path = clevr_path
     print(f"Loading CLEVR data from: {clevr_path}")
     combined_loader = load_clevr_combined_dataset(clevr_path)
     print(f"Found {len(combined_loader)} tasks")
@@ -968,77 +996,111 @@ def run_grm_clevr():
     all_auc = {conf: [] for conf in ABLATED_CONFIGS}
     all_acc = {conf: [] for conf in ABLATED_CONFIGS}
     
-    # Load group training data from clevr_grp_path
-    print(f"Loading group training data from: {clevr_grp_path}")
-    grp_combined_loader = load_clevr_combined_dataset(clevr_grp_path)
-    print(f"Found {len(grp_combined_loader)} group training tasks")
+    # Group training data is the same as rule learning data, so no need to load separately
+    print(f"Using same data for group learning and rule learning")
+    print(f"Filtering tasks by principle: {train_principle}")
+    
+    # Collect all training data from all tasks matching the principle for group model training
+    print(f"\nCollecting all training data for group model training...")
+    all_train_positive = []
+    all_train_negative = []
+    all_val_positive = []
+    all_val_negative = []
     
     for task_idx, (train_data, val_data, test_data) in enumerate(combined_loader):
-        if task_idx!=2:
-            continue 
+        task_name = train_data["task"]
+        if train_principle.lower() not in task_name.lower():
+            continue
+        
+        # Collect training samples
+        all_train_positive.extend(train_data["positive"])
+        all_train_negative.extend(train_data["negative"])
+        all_val_positive.extend(val_data["positive"])
+        all_val_negative.extend(val_data["negative"])
+    
+    # Create combined training data
+    combined_train_data = {
+        "positive": all_train_positive,
+        "negative": all_train_negative,
+        "task": f"combined_{train_principle}"
+    }
+    combined_val_data = {
+        "positive": all_val_positive,
+        "negative": all_val_negative,
+        "task": f"combined_{train_principle}"
+    }
+    
+    print(f"Combined training data: {len(all_train_positive)} positive, {len(all_train_negative)} negative")
+    print(f"Combined validation data: {len(all_val_positive)} positive, {len(all_val_negative)} negative")
+    
+    # Train group model once on all combined data
+    if not args.use_gt_groups:
+        gd_epochs = getattr(args, 'gd_epochs', 100)
+        gd_lr = getattr(args, 'gd_lr', 1e-3)
+        mask_dims = getattr(args, 'mask_dims', None)
+        model_type = getattr(args, 'model_type', 'nn')
+        
+        print(f"\nTraining group scorer model on ALL training data...")
+        group_model = train_group_scorer_model(
+            train_data=combined_train_data,
+            val_data=combined_val_data,
+            train_principle=train_principle,
+            args=args,
+            epochs=gd_epochs,
+            lr=gd_lr,
+            mask_dims=mask_dims,
+            model_type=model_type
+        )
+        print(f"Group model training completed. Will use this model for all tasks.\n")
+        
+        # Optionally test the trained group model on combined test data
+        if args.test_group_model:
+            print(f"Testing group model on combined test data...")
+            # Collect all test data
+            all_test_positive = []
+            all_test_negative = []
+            for task_idx, (train_data, val_data, test_data) in enumerate(combined_loader):
+                task_name = train_data["task"]
+                if train_principle.lower() not in task_name.lower():
+                    continue
+                all_test_positive.extend(test_data["positive"])
+                all_test_negative.extend(test_data["negative"])
+            
+            combined_test_data = {
+                "positive": all_test_positive,
+                "negative": all_test_negative,
+                "task": f"combined_{train_principle}"
+            }
+            
+            _, group_metrics = load_and_test_group_model(
+                task_name=f"combined_{train_principle}",
+                train_principle=train_principle,
+                grp_test_data=combined_test_data,
+                args=args,
+                group_model=group_model
+            )
+            print(f"Combined group model testing completed.\n")
+    else:
+        print(f"Using ground truth groups (--use_gt_groups flag is set)")
+        group_model = None
+    
+    # Now process each task with the trained group model
+    tasks_processed = 0
+    for task_idx, (train_data, val_data, test_data) in enumerate(combined_loader):
+        # if task_idx!=0:
+            # continue 
         
         task_name = train_data["task"]
-        print(f"\nTask {task_idx + 1}/{len(combined_loader)}: {task_name}")
         
-        # Get corresponding group training data for the same task
-        grp_train_data, grp_val_data, grp_test_data = grp_combined_loader[task_idx]
+        # Filter tasks to only run those with the principle in the task name
+        if train_principle.lower() not in task_name.lower():
+            print(f"\nSkipping Task {task_idx + 1}/{len(combined_loader)}: {task_name} (does not match principle '{train_principle}')")
+            continue
         
-        # Check if using ground truth groups or training a model
-        if args.use_gt_groups:
-            print(f"Using ground truth groups (--use_gt_groups flag is set)")
-            group_model = None  # Not needed when using GT groups
-        else:
-            gd_epochs = getattr(args, 'gd_epochs', 100)
-            gd_lr = getattr(args, 'gd_lr', 1e-3)
-            mask_dims = getattr(args, 'mask_dims', None)
-            compare_models = getattr(args, 'compare_models', False)
-            
-            # Check if we should compare models
-            if compare_models:
-                print(f"Comparing NN vs Transformer models for task {task_name}...")
-                comparison_results = compare_scorer_models(
-                    train_data=grp_train_data,
-                    val_data=grp_val_data,
-                    test_data=grp_test_data,
-                    train_principle=train_principle,
-                    args=args,
-                    epochs=gd_epochs,
-                    lr=gd_lr,
-                    mask_dims=mask_dims
-                )
-                # Use the better model for downstream tasks
-                nn_f1 = comparison_results['nn']['metrics'].get('f1', 0)
-                tf_f1 = comparison_results['transformer']['metrics'].get('f1', 0)
-                if tf_f1 > nn_f1:
-                    group_model = comparison_results['transformer']['model']
-                    print(f"Using Transformer model (F1: {tf_f1:.4f} > {nn_f1:.4f})")
-                else:
-                    group_model = comparison_results['nn']['model']
-                    print(f"Using NN model (F1: {nn_f1:.4f} >= {tf_f1:.4f})")
-            else:
-                # Train single model
-                print(f"Training group scorer model for task {task_name}...")
-                model_type = getattr(args, 'model_type', 'nn')  # 'nn' or 'transformer'
-                group_model = train_group_scorer_model(
-                    train_data=grp_train_data,
-                    val_data=grp_val_data,
-                    train_principle=train_principle,
-                    args=args,
-                    epochs=gd_epochs,
-                    lr=gd_lr,
-                    mask_dims=mask_dims,
-                    model_type=model_type
-                )
-                
-                # Test the trained group model
-                print(f"Testing group model on test data for task {task_name}...")
-                _, group_metrics = load_and_test_group_model(
-                    task_name=task_name,
-                    train_principle=train_principle,
-                    grp_test_data=grp_test_data,
-                    args=args,
-                    group_model=group_model  # Pass the trained model
-                )
+        tasks_processed += 1
+        print(f"\n{'='*80}")
+        print(f"Processing Task {tasks_processed} (#{task_idx + 1}/{len(combined_loader)}): {task_name}")
+        print(f"{'='*80}")
         
         log_dicts = {}
         for mode_name, ablation_flags in ABLATED_CONFIGS.items():
@@ -1088,7 +1150,27 @@ def run_grm_clevr():
                 "task_name": task_name,
                 **{k: test_metrics.get(k, 0) for k in test_metrics}
             })
+        
+        # Print task results after each task
+        print(f"\n{'-'*80}")
+        print(f"Task {task_name} - Results:")
+        print(f"{'-'*80}")
+        for mode_name in ABLATED_CONFIGS.keys():
+            task_result = per_task_results[mode_name][-1]
+            acc = task_result.get("acc", 0)
+            f1 = task_result.get("f1", 0)
+            auc = task_result.get("auc", 0)
+            print(f"  {mode_name:15s}: acc={acc:.4f}, f1={f1:.4f}, auc={auc:.4f}")
+        print(f"{'-'*80}\n")
         # wandb.log(log_dicts)
+
+    # Print summary of tasks processed
+    print(f"\n{'='*80}")
+    print(f"Tasks Summary:")
+    print(f"  Total tasks in dataset: {len(combined_loader)}")
+    print(f"  Tasks processed (matching principle '{train_principle}'): {tasks_processed}")
+    print(f"  Tasks skipped: {len(combined_loader) - tasks_processed}")
+    print(f"{'='*80}\n")
 
     # save and summarize
     final_summary = {

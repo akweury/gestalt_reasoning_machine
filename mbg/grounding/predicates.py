@@ -339,3 +339,10 @@ def unique_colors_eval(hard, soft, _, __):  return _group_uniqueness_eval(hard, 
 
 
 def unique_sizes_eval(hard, soft, _, __):   return _group_uniqueness_eval(hard, "unique_sizes")
+
+
+def same_group_counts_eval(hard, soft, _, __):
+    """Evaluate whether all groups have the same member count."""
+    if "same_group_counts" in hard:
+        return hard["same_group_counts"]
+    return torch.tensor(0.0)

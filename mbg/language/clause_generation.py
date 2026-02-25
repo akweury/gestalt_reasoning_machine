@@ -474,8 +474,17 @@ class ClauseGenerator:
         # (c) group size & principle
         # clause to represent the group number
         gn = int(len(hard["group_size"]))
+        # Add rule with group_num in body: image_target(X) :- group_num(I, gn)
         self.add(clauses_dict, self.img_head, [
             ("group_num", "I", gn)], support_mask=torch.ones(G, dtype=torch.bool))
+        
+        # Add same_group_counts predicate if present
+        if "same_group_counts" in hard:
+            same_counts = bool(hard["same_group_counts"].item())
+            if same_counts:
+                self.add(clauses_dict, self.img_head, [
+                    ("same_group_counts", "I", None)], support_mask=torch.ones(G, dtype=torch.bool))
+        
         for i in range(O):
             shape_val = int(hard["has_shape"][i].item())
             group_ids = torch.where(hard["in_group"][i])[0]

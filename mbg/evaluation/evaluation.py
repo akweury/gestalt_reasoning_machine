@@ -148,6 +148,7 @@ EVAL_FN = {
     "sim_shape_soft": sim_shape_soft_eval,
     "sim_color_soft": sim_color_soft_eval,
     "sim_size_soft": sim_size_soft_eval,
+    "same_group_counts": same_group_counts_eval,
 
 }
 
