@@ -14,7 +14,7 @@ This reflects perceptual cue integration (e.g., proximity ∧ depth),
 not task-driven or post-hoc reasoning.
 """
 
-from typing import Dict, List, Tuple, Set
+from typing import Dict, List, Set
 
 from mbg.grounding.predicates_real import (
     Group,

@@ -9,6 +9,7 @@ import matplotlib.patches as patches
 from matplotlib.colors import hsv_to_rgb
 import random
 from datetime import datetime
+import argparse
 
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent.parent))
@@ -111,6 +112,23 @@ def load_coco_objects_from_image(coco_json, depth_dir, conf_dir, image_idx=0):
     return objects, str(image_path), image_diag
 
 
+def find_image_index_by_id(images, image_id):
+    """
+    Find the index of an image in the images list by its ID.
+    
+    Args:
+        images: List of image dictionaries from COCO annotations
+        image_id: The image ID to search for
+    
+    Returns:
+        Index of the image, or None if not found
+    """
+    for idx, img in enumerate(images):
+        if img["id"] == image_id:
+            return idx
+    return None
+
+
 def get_group_type_name(group_id):
     """
     Extract group type name from group ID.
@@ -168,7 +186,7 @@ def visualize_all_objects_clean(image_path, objects, output_path):
         
         rect = patches.Rectangle(
             (x, y), w, h,
-            linewidth=2,
+            linewidth=8,
             edgecolor=color,
             facecolor='none'
         )
@@ -207,8 +225,9 @@ def visualize_group_clean(image_path, objects, group, output_path):
     ax.imshow(img)
     ax.axis('off')
     
-    # Use a single color for the entire group
-    group_color = hsv_to_rgb([hash(group.gid) % 100 / 100.0, 0.8, 0.9])
+    # Define colors: bright pink for objects, red for group
+    object_color = 'hotpink'  # bright pink
+    group_color = 'red'
     
     # Calculate bounding box for the entire group
     min_x = float('inf')
@@ -227,25 +246,25 @@ def visualize_group_clean(image_path, objects, group, output_path):
         max_x = max(max_x, x + w)
         max_y = max(max_y, y + h)
         
-        # Draw member rectangle
+        # Draw member rectangle in bright pink
         rect = patches.Rectangle(
             (x, y), w, h,
-            linewidth=1,
-            edgecolor=group_color,
+            linewidth=8,
+            edgecolor="green",
             facecolor='none'
         )
         ax.add_patch(rect)
     
-    # Draw the group bounding box
+    # Draw the group bounding box in red (solid line)
     group_bbox_width = max_x - min_x
     group_bbox_height = max_y - min_y
     group_rect = patches.Rectangle(
         (min_x, min_y), group_bbox_width, group_bbox_height,
-        linewidth=3,
+        linewidth=8,
         edgecolor=group_color,
         facecolor='none',
-        linestyle='--',
-        alpha=0.7
+        linestyle='-',
+        alpha=1
     )
     ax.add_patch(group_rect)
     
@@ -291,8 +310,9 @@ def visualize_group(image_path, objects, group, output_path, group_id, reasoning
     ax_legend = fig.add_subplot(gs[1])
     ax_legend.axis('off')
     
-    # Use a single color for the entire group
-    group_color = hsv_to_rgb([hash(group.gid) % 100 / 100.0, 0.8, 0.9])
+    # Define colors: bright pink for objects, red for group
+    object_color = 'hotpink'  # bright pink
+    group_color = 'red'
     
     # Calculate bounding box for the entire group
     min_x = float('inf')
@@ -312,11 +332,11 @@ def visualize_group(image_path, objects, group, output_path, group_id, reasoning
         max_x = max(max_x, x + w)
         max_y = max(max_y, y + h)
         
-        # Draw rectangle on image with same color for all members
+        # Draw rectangle on image in bright pink
         rect = patches.Rectangle(
             (x, y), w, h,
-            linewidth=1,
-            edgecolor=group_color,
+            linewidth=5,
+            edgecolor=object_color,
             facecolor='none'
         )
         ax_img.add_patch(rect)
@@ -328,15 +348,15 @@ def visualize_group(image_path, objects, group, output_path, group_id, reasoning
             'depth': obj.depth,
         })
     
-    # Draw the group bounding box
+    # Draw the group bounding box in red (solid line)
     group_bbox_width = max_x - min_x
     group_bbox_height = max_y - min_y
     group_rect = patches.Rectangle(
         (min_x, min_y), group_bbox_width, group_bbox_height,
-        linewidth=3,
+        linewidth=5,
         edgecolor=group_color,
         facecolor='none',
-        linestyle='--',
+        linestyle='-',
         alpha=0.7
     )
     ax_img.add_patch(group_rect)
@@ -621,12 +641,22 @@ def visualize_three_panel_summary(image_path, objects, candidate_groups, refined
 # Batch experiment configuration
 # ============================================================
 
-NUM_IMAGES = 20          # number of random images per run
+DEFAULT_IMAGE_IDS = [62025, 526392, 415727]  # Default COCO image IDs to process
+NUM_IMAGES = 20          # number of random images per run (for --random mode)
 RANDOM_SEED = None      # set to int for reproducibility, or None
 MODES = ["intersection"]
 
-if RANDOM_SEED is not None:
-    random.seed(RANDOM_SEED)
+# Parse command-line arguments
+parser = argparse.ArgumentParser(description='Generate group visualizations for COCO images')
+parser.add_argument('--image_ids', type=int, nargs='+', 
+                    help=f'Specific COCO image IDs to process. Default: {DEFAULT_IMAGE_IDS}')
+parser.add_argument('--random', action='store_true',
+                    help='Use random image selection instead of default IDs.')
+parser.add_argument('--num_images', type=int, default=NUM_IMAGES,
+                    help=f'Number of random images to process (default: {NUM_IMAGES}). Only used with --random flag.')
+parser.add_argument('--random_seed', type=int, default=RANDOM_SEED,
+                    help='Random seed for reproducibility. Only used with --random flag.')
+args = parser.parse_args()
 
 # Load real COCO data
 coco_path = config.get_coco_path()
@@ -639,12 +669,44 @@ with open(coco_json) as f:
     coco_data = json.load(f)
 
 num_total_images = len(coco_data["images"])
-all_indices = list(range(num_total_images))
-selected_indices = random.sample(all_indices, k=min(NUM_IMAGES, num_total_images))
+all_images = coco_data["images"]
+
+# Select images based on arguments
+if args.image_ids:
+    # Use specified image IDs from command line
+    selected_image_ids = args.image_ids
+    print(f"Using specified COCO image IDs: {selected_image_ids}")
+elif args.random:
+    # Random selection - get image IDs from randomly selected indices
+    if args.random_seed is not None:
+        random.seed(args.random_seed)
+    all_indices = list(range(num_total_images))
+    random_indices = random.sample(all_indices, k=min(args.num_images, num_total_images))
+    selected_image_ids = [all_images[idx]["id"] for idx in random_indices]
+    print(f"Randomly selected {len(selected_image_ids)} images")
+else:
+    # Use default image IDs
+    selected_image_ids = DEFAULT_IMAGE_IDS
+    print(f"Using default COCO image IDs: {selected_image_ids}")
+
+# Convert image IDs to indices
+selected_indices = []
+for img_id in selected_image_ids:
+    idx = find_image_index_by_id(all_images, img_id)
+    if idx is not None:
+        selected_indices.append(idx)
+    else:
+        print(f"Warning: Image ID {img_id} not found in dataset, skipping.")
+
+if not selected_indices:
+    print("Error: No valid images to process. Exiting.")
+    sys.exit(1)
 
 print("\n" + "=" * 60)
 print(f"Running GRM real-image batch experiment")
-print(f"Selected image indices: {selected_indices}")
+print(f"Processing {len(selected_indices)} images:")
+print(f"  Image IDs: {selected_image_ids}")
+print(f"  Indices: {selected_indices}")
 print("=" * 60)
 
 # Create a unique output folder for this batch
@@ -660,9 +722,10 @@ print(f"\nSaving batch results to: {batch_output_dir}")
 
 
 for run_idx, image_idx in enumerate(selected_indices):
-
+    image_id = selected_image_ids[run_idx]
+    
     print("\n" + "-" * 60)
-    print(f"[{run_idx+1}/{len(selected_indices)}] Processing image_idx={image_idx}")
+    print(f"[{run_idx+1}/{len(selected_indices)}] Processing image ID={image_id} (index={image_idx})")
     print("-" * 60)
 
     # --------------------------------------------------------
@@ -711,6 +774,30 @@ for run_idx, image_idx in enumerate(selected_indices):
         refined_groups=new_groups,
         output_path=str(summary_path)
     )
+
+    # --------------------------------------------------------
+    # Generate individual images for each refined group
+    # --------------------------------------------------------
+    groups_output_dir = image_out_dir / "individual_groups"
+    groups_output_dir.mkdir(parents=True, exist_ok=True)
+    
+    print(f"\nGenerating individual group images...")
+    print(f"Total refined groups: {len(new_groups)}")
+    
+    for group_idx, group in enumerate(new_groups):
+        # Save detailed version with legend
+        detailed_path = groups_output_dir / f"group_{group_idx:03d}_detailed.png"
+        visualize_group(image_path, objects, group, str(detailed_path), group_id=group_idx)
+        
+        # Save clean version with only bounding boxes
+        clean_path = groups_output_dir / f"group_{group_idx:03d}_clean.png"
+        visualize_group_clean(image_path, objects, group, str(clean_path))
+    
+    # Also save an image with all objects
+    all_objects_path = groups_output_dir / "all_objects.png"
+    visualize_all_objects_clean(image_path, objects, str(all_objects_path))
+    
+    print(f"Individual group images saved to: {groups_output_dir}")
 
 print("\n" + "=" * 60)
 print("Batch experiment completed.")
